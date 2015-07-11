@@ -66,6 +66,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
             catch (Exception err)
             {
+                return;
             }
         }
     }

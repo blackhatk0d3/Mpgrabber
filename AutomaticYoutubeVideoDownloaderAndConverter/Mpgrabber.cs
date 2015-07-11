@@ -13,6 +13,7 @@ using System.Threading;
 using System.Xml;
 using System.IO;
 using System.ServiceProcess;
+using System.Xml.Linq;
 
 namespace AutomaticYoutubeVideoDownloaderAndConverter
 {
@@ -27,11 +28,75 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
         Boolean debug = true;
         String logfilename = "C:\\mpgrabber\\errorlog.log";
         String dlogfilename = "C:\\mpgrabber\\debuglog.log";
-        String ipAddrress = "174.55.156.71";//"10.13.22.88";//"174.55.156.71";
+        String ipAddrress = "174.55.156.71";
 
         private String createId()
         {
             return Guid.NewGuid().ToString().Replace("-", "");
+        }
+
+        private async Task<bool> waitForDataToBecomeAvailable(int numofmillisecondstowait, Socket youtubeSock)
+        {
+            return await Task<bool>.Run(() =>
+            {
+                var startTime = DateTime.Now;
+                TimeSpan totTime;
+
+                while (youtubeSock.Available == 0)
+                {
+                    if ((totTime = DateTime.Now.Subtract(startTime)).Milliseconds > numofmillisecondstowait)
+                    {
+                        if (youtubeSock.Connected)
+                        {
+                            youtubeSock.Shutdown(SocketShutdown.Both);
+                        }
+
+                        youtubeSock.Close();
+                        youtubeSock.Dispose();
+                        LogError("\nwaitForDataToBecomeAvailable() - Dropping http request. Request data took more than 1 sec to send data.\n");
+
+                        return false;
+                    }
+                };
+
+                return true;
+            });
+        }
+
+        private async Task<String> httpRequest(Socket accSock, Byte method, String headerAndBodyRaw, String link)
+        {
+            Socket youtubeSock = new Socket(AddressFamily.InterNetwork, SocketType.Seqpacket, ProtocolType.IPv4);
+            Byte[] requbytes = new Byte[8192];
+            Int32 recvd = -1;
+            String request = "";
+            String headerAndBody = ((method == 1) ? "GET " : "POST " ) + link + headerAndBodyRaw.Substring(headerAndBodyRaw.IndexOf("HTTP/1.1") - 1);
+
+            try
+            {
+                await Task.Factory.FromAsync(youtubeSock.BeginConnect, youtubeSock.EndConnect, "www.youtube.com", 80, null); 
+
+                if (youtubeSock.Connected)
+                {
+                    var buffer = Encoding.ASCII.GetBytes(headerAndBody);
+                    int bytessent = await Task.Factory.FromAsync<int>(youtubeSock.BeginSend(buffer, 0, buffer.Length, SocketFlags.None, null, youtubeSock), youtubeSock.EndSend);
+
+                    if (await waitForDataToBecomeAvailable(1000, youtubeSock))
+                    {
+                        recvd = youtubeSock.Receive(requbytes);
+                        request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
+                    }
+
+                    youtubeSock.Dispose();
+                }
+
+                return request;                
+            }
+            catch(Exception err)
+            {
+                LogError("\nhttpRequest() - Error: " + err.Message + "\n\n" + err.StackTrace + "\n" + headerAndBody);
+            }
+
+            return "";
         }
 
         private async Task call(Socket accSock)
@@ -47,30 +112,18 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 Int32 recvd = -1;
                 String id = null;
                 String respStr = "";
+                String remoteip = ((accSock.RemoteEndPoint is IPEndPoint) ? ((IPEndPoint)accSock.RemoteEndPoint).Address.ToString() : null);
                 bool error = false;
                 int start = 0;
                 int len = 0;
-                var startTime = DateTime.Now;
-                TimeSpan totTime;
 
-                while (accSock.Available == 0)
-                {
-                    if ((totTime = DateTime.Now.Subtract(startTime)).Milliseconds > 500)
-                    {
-                        if (accSock.Connected)
-                        {
-                            accSock.Shutdown(SocketShutdown.Both);
-                        }
+                if (!String.IsNullOrEmpty(remoteip))
+                    LogDebug("\nIpaddress: " + remoteip + "\n");
 
-                        accSock.Close();
-                        accSock.Dispose();
-                        LogError("\nDropping http request. Request data took more than .5 sec to send data.\n");
-                        return;
-                    }
-                };
+                if (!await waitForDataToBecomeAvailable(1000, accSock))
+                    return;
 
                 recvd = accSock.Receive(requbytes);
-
                 request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
 
                 if (request.IndexOf("/utube*") > -1)
@@ -149,7 +202,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                         {
                             FileName = "youtube-dl.exe",
                             WorkingDirectory = "C:\\temp\\",
-                            Arguments = " " + youtubeLink + " -f 18 -x --prefer-ffmpeg --audio-format \"mp3\" -o %(title)s" + id + ".%(ext)s",
+                            Arguments = " " + youtubeLink + " -f 18 -x -k --prefer-ffmpeg --audio-format \"mp3\" -o %(title)s" + id + ".%(ext)s",
                             CreateNoWindow = true
                         });
 
@@ -208,7 +261,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                             youtubeLink = "http://www.youtube.com/watch?v=" + youtubeLink.Substring(youtubeLink.IndexOf("e/") + 2);
                         }
 
-                        songtitle = identifySongFromLink(youtubeLink).TrimStart().TrimEnd();
+                        songtitle = await identifySongFromLink(youtubeLink);
+                        songtitle = songtitle.TrimStart().TrimEnd();
 
                         if (!String.IsNullOrEmpty(songtitle))
                         {
@@ -292,7 +346,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
         }
 
-        public String identifySongFromLink(String link)
+        public async Task<String> identifySongFromLink(String link)
         {
             try
             {
@@ -300,7 +354,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 String html = "";
                 var xhtml = new HtmlAgilityPack.HtmlDocument();
 
-                html = client.DownloadString(link);
+                html = await client.DownloadStringTaskAsync(link);
                 xhtml.LoadHtml(html);
 
                 var span = xhtml.DocumentNode.DescendantNodes().Where(h => h.Name == "span" && h.Attributes.Any(attr => attr.Value.Equals("eow-title"))).FirstOrDefault();
@@ -311,7 +365,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
             catch (Exception err)
             {
-                LogError("Error: identifySongFromLink() - " + err.StackTrace + "\n\n" + err.Message);
+                LogError("Error: identifySongFromLink() - " + err.StackTrace + "\n\n" + err.Message + "\nlink: " + link);
                 return "";
             }
         }
@@ -342,7 +396,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                     link = "https://www.youtube.com/playlist?" + link;
                 }
 
-                html = client.DownloadString(link);
+                html = await client.DownloadStringTaskAsync(link);
                 xhtml.LoadHtml(html);
 
                 var a = xhtml.DocumentNode.DescendantNodes().Where(h => h.Name == "a").ToList();
@@ -380,6 +434,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             Int32 recvd = -1;
             Int32 start = -1;
             Int32 len = -1;
+            String remoteip = ((accSock.RemoteEndPoint is IPEndPoint) ? ((IPEndPoint)accSock.RemoteEndPoint).Address.ToString() : null);
             String responseHeaders = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-type: text/html\r\n";
             String link = "";
             String request = "";
@@ -387,133 +442,125 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
             try
             {
-                var startTime = DateTime.Now;
-                TimeSpan totTime;
+                if (!String.IsNullOrEmpty(remoteip))
+                    LogDebug("\nIpaddress: " + remoteip + "\n");
 
-                while (accSock.Available == 0)
+                if (await waitForDataToBecomeAvailable(1000, accSock))
                 {
-                    if ((totTime = DateTime.Now.Subtract(startTime)).Milliseconds > 100)
+                    recvd = accSock.Receive(requbytes);
+                    request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
+
+                    if ((start = request.IndexOf("/proxy*")) > -1)
                     {
-                        accSock.Shutdown(SocketShutdown.Both);
-                        accSock.Close();
-                        LogError("\nProxy() - Dropping http request. Request data took more than 1 sec to send data.\n");
-                        return;
-                    }
-                };
+                        if (request.IndexOf("referer") < start)
+                        {
+                            start += 7;
 
-                recvd = accSock.Receive(requbytes);
+                            if (request.IndexOf('|', start) > -1)
+                                len = request.IndexOf('|', start) - start;
+                            else
+                                len = request.IndexOf("%7C", start) - start;
 
-                request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
-
-                if ((start = request.IndexOf("/proxy*")) > -1)
-                {
-                    if (request.IndexOf("referer") < start)
-                    {
-                        start += 7;
-
-                        if (request.IndexOf('|', start) > -1)
-                            len = request.IndexOf('|', start) - start;
+                            link = request.Substring(start, len);
+                        }
                         else
-                            len = request.IndexOf("%7C", start) - start;
-
-                        link = request.Substring(start, len);
+                        {
+                            start = request.IndexOf(":8083/") + 6;
+                            len = request.IndexOf(" HTTP/1.1") - start;
+                            link = request.Substring(start, len);
+                        }
                     }
                     else
                     {
-                        start = request.IndexOf(":8083/") + 6;
+                        start = 4;
                         len = request.IndexOf(" HTTP/1.1") - start;
                         link = request.Substring(start, len);
                     }
-                }
-                else
-                {
-                    start = 4;
-                    len = request.IndexOf(" HTTP/1.1") - start;
-                    link = request.Substring(start, len);
-                }
 
-                if (link.IndexOf("://") < 0)
-                {
-                    link = "http://www.youtube.com" + link;
-                    link = link.Replace(" ", "");
-                }
-
-                if (request.IndexOf("text") > -1 && request.IndexOf("Accept: image") == -1 || ((request.IndexOf("Accept") == -1 || request.IndexOf("Accept: */*") > -1) && request.IndexOf("Content-type") == -1))
-                {
-                    if (request.IndexOf("GET ") == 0)
+                    if (link.IndexOf("://") < 0)
                     {
-                        html = client.DownloadString(link);
-                        xhtml.LoadHtml(html);
+                        link = "http://www.youtube.com" + link;
+                        link = link.Replace(" ", "");
+                    }
+
+                    if (request.IndexOf("text") > -1 && request.IndexOf("Accept: image") == -1 || ((request.IndexOf("Accept") == -1 || request.IndexOf("Accept: */*") > -1) && request.IndexOf("Content-type") == -1))
+                    {
+                        if (request.IndexOf("GET ") == 0)
+                        {
+                            html = await client.DownloadStringTaskAsync(link);
+                            //html = await httpRequest(accSock, 1, request, link);
+                            xhtml.LoadHtml(html);
+                        }
+                        else
+                        {
+                            String postData = request.Substring(request.IndexOf("\r\n\r\n"));
+
+                            LogDebug("link for POST call..." + link + " and POST data " + postData);
+
+                            html = client.UploadString(link, postData);
+                            xhtml.LoadHtml(html);
+                        }
+                    }
+
+                    if (xhtml.DocumentNode != null)
+                    {
+                        if (xhtml.DocumentNode.OuterHtml != null)
+                        {
+                            foreach (var node in xhtml.DocumentNode.DescendantNodes().Where(h => (h.Name == "a") || h.Name == "link"))
+                            {
+                                foreach (var attr in node.Attributes.Where(h => h.Name == "href"))
+                                {
+                                    if (attr.Value.IndexOf("http://") == -1 && attr.Value.IndexOf("https://") == -1)
+                                        if (attr.Value.IndexOf(".com") == -1)
+                                            attr.Value = "http://www.youtube.com" + attr.Value;
+                                        else
+                                            attr.Value = "http:" + attr.Value;
+
+                                    attr.Value = "http://" + ipAddrress + ":8083/proxy*" + attr.Value + "|";
+                                }
+                            }
+
+                            foreach (var node in xhtml.DocumentNode.DescendantNodes().Where(h => (h.Name == "img")))
+                            {
+                                foreach (var attr in node.Attributes.Where(h => h.Name == "src"))
+                                {
+                                    if (attr.Value.IndexOf("http://") == -1 && attr.Value.IndexOf("https://") == -1)
+                                        if (attr.Value.IndexOf(".com") == -1)
+                                            attr.Value = "http://www.youtube.com" + attr.Value;
+                                        else
+                                            attr.Value = "http:" + attr.Value;
+
+                                    attr.Value = "http://" + ipAddrress + ":8083/proxy*" + attr.Value + "|";
+                                }
+                            }
+
+                            responseHeaders += "Content-Length: " + xhtml.DocumentNode.OuterHtml.Length + "\r\n\r\n";
+                            accSock.Send(Encoding.ASCII.GetBytes(responseHeaders + xhtml.DocumentNode.OuterHtml));
+                            accSock.Shutdown(SocketShutdown.Both);
+                            accSock.Close();
+                        }
+                        else
+                        {
+                            responseHeaders += "Content-Length: " + html.Length + "\r\n\r\n";
+                            accSock.Send(Encoding.ASCII.GetBytes(responseHeaders + html));
+                            accSock.Shutdown(SocketShutdown.Both);
+                            accSock.Close();
+                        }
                     }
                     else
                     {
-                        String postData = request.Substring(request.IndexOf("\r\n\r\n"));
-
-                        LogDebug("link for POST call..." + link + " and POST data " + postData);
-
-                        html = client.UploadString(link, postData);
-                        xhtml.LoadHtml(html);
-                    }
-                }
-
-                if (xhtml.DocumentNode != null)
-                {
-                    if (xhtml.DocumentNode.OuterHtml != null)
-                    {
-                        foreach (var node in xhtml.DocumentNode.DescendantNodes().Where(h => (h.Name == "a") || h.Name == "link"))
-                        {
-                            foreach (var attr in node.Attributes.Where(h => h.Name == "href"))
-                            {
-                                if (attr.Value.IndexOf("http://") == -1 && attr.Value.IndexOf("https://") == -1)
-                                    if (attr.Value.IndexOf(".com") == -1)
-                                        attr.Value = "http://www.youtube.com" + attr.Value;
-                                    else
-                                        attr.Value = "http:" + attr.Value;
-
-                                attr.Value = "http://" + ipAddrress + ":8083/proxy*" + attr.Value + "|";
-                            }
-                        }
-
-                        foreach (var node in xhtml.DocumentNode.DescendantNodes().Where(h => (h.Name == "img")))
-                        {
-                            foreach (var attr in node.Attributes.Where(h => h.Name == "src"))
-                            {
-                                if (attr.Value.IndexOf("http://") == -1 && attr.Value.IndexOf("https://") == -1)
-                                    if (attr.Value.IndexOf(".com") == -1)
-                                        attr.Value = "http://www.youtube.com" + attr.Value;
-                                    else
-                                        attr.Value = "http:" + attr.Value;
-
-                                attr.Value = "http://" + ipAddrress + ":8083/proxy*" + attr.Value + "|";
-                            }
-                        }
-
-                        responseHeaders += "Content-Length: " + xhtml.DocumentNode.OuterHtml.Length + "\r\n\r\n";
-                        accSock.Send(Encoding.ASCII.GetBytes(responseHeaders + xhtml.DocumentNode.OuterHtml));
+                        image = await client.DownloadDataTaskAsync(link);
+                        responseHeaders += "Content-Length: " + image.Length + "\r\n\r\n";
+                        respbs.AddRange(Encoding.ASCII.GetBytes(responseHeaders));
+                        respbs.AddRange(image);
+                        accSock.Send(respbs.ToArray());
                         accSock.Shutdown(SocketShutdown.Both);
                         accSock.Close();
                     }
-                    else
-                    {
-                        responseHeaders += "Content-Length: " + html.Length + "\r\n\r\n";
-                        accSock.Send(Encoding.ASCII.GetBytes(responseHeaders + html));
-                        accSock.Shutdown(SocketShutdown.Both);
-                        accSock.Close();
-                    }
-                }
-                else
-                {
-                    image = client.DownloadData(link);
-                    responseHeaders += "Content-Length: " + image.Length + "\r\n\r\n";
-                    respbs.AddRange(Encoding.ASCII.GetBytes(responseHeaders));
-                    respbs.AddRange(image);
-                    accSock.Send(respbs.ToArray());
-                    accSock.Shutdown(SocketShutdown.Both);
-                    accSock.Close();
-                }
 
-                client.Dispose();
-                accSock.Dispose();
+                    client.Dispose();
+                    accSock.Dispose();
+                }
             }
             catch (Exception err)
             {
@@ -534,27 +581,12 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
             try
             {
-                var gctimer1 = new System.Threading.Timer((Object obj) =>
-                {
-                    GC.Collect(0, GCCollectionMode.Optimized, false);
-                }, null, System.Threading.Timeout.Infinite, 5000);
-
-                var gctimer2 = new System.Threading.Timer((Object obj) =>
-                {
-                    GC.Collect(1, GCCollectionMode.Optimized, false);
-                }, null, System.Threading.Timeout.Infinite, 15000);
-
-                var gctimer3 = new System.Threading.Timer((Object obj) =>
-                {
-                    GC.Collect(2, GCCollectionMode.Optimized, false);
-                }, null, System.Threading.Timeout.Infinite, 100000);
-
                 await Task.Run(async() =>
                 {
                     while (true)
                     {
                        restart:
-                        LogDebug("\nMpgrabber OnStart()\n");
+                        LogDebug("\nMpgrabber onStart()\n");
 
                         IPAddress ipAddr = Dns.GetHostAddresses(Dns.GetHostName()).ToList().Find(ip => ip.AddressFamily == AddressFamily.InterNetwork && ip.ToString().IndexOf("10.13.22") > -1);
                         ServicePointManager.ServerCertificateValidationCallback = delegate
@@ -585,7 +617,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                             listeningSocket1.Listen(int.MaxValue);
                                         }
 
-                                        call(await Task.Factory.FromAsync<Socket>(listeningSocket1.BeginAccept, listeningSocket1.EndAccept, true));
+                                        await call(await Task.Factory.FromAsync<Socket>(listeningSocket1.BeginAccept, listeningSocket1.EndAccept, true));
                                     }
                                     catch(Exception err)
                                     {
@@ -612,7 +644,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                             listeningSocket2.Listen(int.MaxValue);
                                         }
 
-                                        call(await Task.Factory.FromAsync<Socket>(listeningSocket2.BeginAccept, listeningSocket2.EndAccept, true));
+                                        await call(await Task.Factory.FromAsync<Socket>(listeningSocket2.BeginAccept, listeningSocket2.EndAccept, true));
+                                        GC.Collect(2, GCCollectionMode.Optimized, false);
                                     }
                                     catch(Exception err)
                                     {
@@ -639,7 +672,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                             listeningSocket3.Listen(int.MaxValue);
                                         }
 
-                                        call(await Task.Factory.FromAsync<Socket>(listeningSocket3.BeginAccept, listeningSocket3.EndAccept, true));
+                                        await call(await Task.Factory.FromAsync<Socket>(listeningSocket3.BeginAccept, listeningSocket3.EndAccept, true));
                                     }
                                     catch(Exception err)
                                     {
@@ -666,7 +699,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                             listeningSocket4.Listen(int.MaxValue);
                                         }
 
-                                        proxy(await Task.Factory.FromAsync<Socket>(listeningSocket4.BeginAccept, listeningSocket4.EndAccept, true));
+                                        await proxy(await Task.Factory.FromAsync<Socket>(listeningSocket4.BeginAccept, listeningSocket4.EndAccept, true));
                                     }
                                     catch(Exception err)
                                     {
