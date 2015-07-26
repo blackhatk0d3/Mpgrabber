@@ -13,22 +13,19 @@ using System.Threading;
 using System.Xml;
 using System.IO;
 using System.ServiceProcess;
-using System.Xml.Linq;
 
 namespace AutomaticYoutubeVideoDownloaderAndConverter
 {
     class Mpgrabber : ServiceBase
     {
+        MpgrabberSettings setting = new MpgrabberSettings();
+
         public struct PlaylistData
         {
             public String link;
             public String name;
+            public String length;
         }
-
-        Boolean debug = true;
-        String logfilename = "C:\\mpgrabber\\errorlog.log";
-        String dlogfilename = "C:\\mpgrabber\\debuglog.log";
-        String ipAddrress = "174.55.156.71";
 
         private String createId()
         {
@@ -40,10 +37,13 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             return await Task<bool>.Run(() =>
             {
                 var startTime = DateTime.Now;
+                var i = 0;
                 TimeSpan totTime;
 
-                while (youtubeSock.Available == 0)
+                while (youtubeSock.Available == 0 && i++ < 15000)
                 {
+                    System.Threading.Thread.Sleep(5);
+
                     if ((totTime = DateTime.Now.Subtract(startTime)).Milliseconds > numofmillisecondstowait)
                     {
                         if (youtubeSock.Connected)
@@ -69,18 +69,18 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             Byte[] requbytes = new Byte[8192];
             Int32 recvd = -1;
             String request = "";
-            String headerAndBody = ((method == 1) ? "GET " : "POST " ) + link + headerAndBodyRaw.Substring(headerAndBodyRaw.IndexOf("HTTP/1.1") - 1);
+            String headerAndBody = ((method == 1) ? "GET " : "POST ") + link + headerAndBodyRaw.Substring(headerAndBodyRaw.IndexOf("HTTP/1.1") - 1);
 
             try
             {
-                await Task.Factory.FromAsync(youtubeSock.BeginConnect, youtubeSock.EndConnect, "www.youtube.com", 80, null); 
+                await Task.Factory.FromAsync(youtubeSock.BeginConnect, youtubeSock.EndConnect, "www.youtube.com", 80, null);
 
                 if (youtubeSock.Connected)
                 {
                     var buffer = Encoding.ASCII.GetBytes(headerAndBody);
                     int bytessent = await Task.Factory.FromAsync<int>(youtubeSock.BeginSend(buffer, 0, buffer.Length, SocketFlags.None, null, youtubeSock), youtubeSock.EndSend);
 
-                    if (await waitForDataToBecomeAvailable(1000, youtubeSock))
+                    if (await waitForDataToBecomeAvailable(2000, youtubeSock))
                     {
                         recvd = youtubeSock.Receive(requbytes);
                         request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
@@ -89,9 +89,9 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                     youtubeSock.Dispose();
                 }
 
-                return request;                
+                return request;
             }
-            catch(Exception err)
+            catch (Exception err)
             {
                 LogError("\nhttpRequest() - Error: " + err.Message + "\n\n" + err.StackTrace + "\n" + headerAndBody);
             }
@@ -99,7 +99,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             return "";
         }
 
-        private async Task call(Socket accSock)
+        private async Task processCmd(Socket accSock)
         {
             try
             {
@@ -120,11 +120,13 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 if (!String.IsNullOrEmpty(remoteip))
                     LogDebug("\nIpaddress: " + remoteip + "\n");
 
-                if (!await waitForDataToBecomeAvailable(1000, accSock))
+                if (!await waitForDataToBecomeAvailable(2000, accSock))
                     return;
 
                 recvd = accSock.Receive(requbytes);
                 request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
+
+                LogDebug("\n" + request + "\n");
 
                 if (request.IndexOf("/utube*") > -1)
                 {
@@ -161,7 +163,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                     {
                         youtubeLink = "http://www.youtube.com/watch?v=" + youtubeLink.Substring(youtubeLink.IndexOf("e/") + 2);
                     }
-                    else if(youtubeLink.IndexOf("/watch?v=") == -1)
+                    else if (youtubeLink.IndexOf("/watch?v=") == -1)
                     {
                         error = true;
                     }
@@ -176,7 +178,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                         for (var i = 0; i < youtubeLinks.Count; i++)
                         {
                             data = youtubeLinks[i];
-                            
+
                             execcode.Append("{ link: '");
                             execcode.Append(data.link);
                             execcode.Append("', name: '");
@@ -197,12 +199,20 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                     else if (!error)
                     {
                         String filetomove = "";
+                        String arguments_str = " -o %(title)s" + id + ".%(ext)s";
+
+                        if (request.IndexOf("mp3") > -1)
+                            arguments_str += " -x -f 18 --prefer-ffmpeg --audio-format \"mp3\"";
+                        else
+                            arguments_str += " -f mp4 --recode-video mp4 ";
+
+                        LogDebug("\nyoutube-dl " + arguments_str + "\n");
 
                         Process youtubedl = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo()
                         {
                             FileName = "youtube-dl.exe",
                             WorkingDirectory = "C:\\temp\\",
-                            Arguments = " " + youtubeLink + " -f 18 -x -k --prefer-ffmpeg --audio-format \"mp3\" -o %(title)s" + id + ".%(ext)s",
+                            Arguments = " " + youtubeLink + arguments_str,
                             CreateNoWindow = true
                         });
 
@@ -213,6 +223,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
                         if (System.IO.File.Exists(filetomove))
                         {
+                            //WRITE CODE TO CHECK IF ITS BOTH MP3 AND MP4. IF SO ALTER JSCRIPT TO DOWNLOAD BOTJ FILES. ALSO, ADD
+                            //FFMPEG CODE TO MAKE MP4 AN MP3. EX: ffmpeg.exe -i song.mp4 -b:a 192K -vn song2.mp3
                             System.IO.File.Move(filetomove, "C:\\temp\\music\\" + filetomove.Replace("C:\\temp\\", ""));
                             respStr = "if(!window.open(\"http://\" + ip + \":8080/*" + id + "|\")) { document.getElementById('error').innerHTML = ('<font color=\"red\"><strong>Please enable your popup blocker for mpgrabber.com</strong></font>'); window.location.href = \"http://\" + ip + \":8080/*" + id + "|\"; } setTimeout(continueProcessing, 500);";
                             responseHeaders.Append("Content-Length: ");
@@ -245,7 +257,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 {
                     if (request.IndexOf("identify*") > -1)
                     {
-                        String songtitle;
+                        PlaylistData data;
 
                         start = request.IndexOf("*") + 1;
 
@@ -261,12 +273,11 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                             youtubeLink = "http://www.youtube.com/watch?v=" + youtubeLink.Substring(youtubeLink.IndexOf("e/") + 2);
                         }
 
-                        songtitle = await identifySongFromLink(youtubeLink);
-                        songtitle = songtitle.TrimStart().TrimEnd();
+                        data = await identifyDataFromLink(youtubeLink);
 
-                        if (!String.IsNullOrEmpty(songtitle))
+                        if (!String.IsNullOrEmpty(data.name))
                         {
-                            respStr = "songtitle = '" + songtitle + "'";
+                            respStr = "songtitle = '" + data.name + "'; video_length = " + data.length;
                             responseHeaders.Append("Content-Length: ");
                             responseHeaders.Append(respStr.Length);
                             responseHeaders.Append("\r\n\r\n");
@@ -319,25 +330,38 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
         }
 
+        static public void LogErrorII(String logmsg)
+        {
+            try
+            {
+                System.IO.File.AppendAllText("C:\\mpgrabber\\errorlog.log", DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "  " + logmsg);
+            }
+            catch { }
+        }
+
         private void LogError(String logmsg)
         {
             try
             {
-                System.IO.File.AppendAllText(logfilename, DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "  " + logmsg);
+                System.IO.File.AppendAllText(setting.ErrorFileName, DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "  " + logmsg);
             }
             catch
             {
-                //System.IO.File.AppendAllText("C:\\mpgrabber\\lawg.log", logmsg);
+                try
+                {
+                    System.IO.File.AppendAllText("C:\\mpgrabber\\errorlog.log", DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "  " + logmsg);
+                }
+                catch { }
             }
         }
 
         private void LogDebug(String logmsg)
         {
-            if (debug)
+            if (setting.Debug)
             {
                 try
                 {
-                    System.IO.File.AppendAllText(dlogfilename, DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "  " + logmsg);
+                    System.IO.File.AppendAllText(setting.DebugFileName, DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "  " + logmsg);
                 }
                 catch
                 {
@@ -346,12 +370,15 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
         }
 
-        public async Task<String> identifySongFromLink(String link)
+        private async Task<PlaylistData> identifyDataFromLink(String link)
         {
+            PlaylistData plist = new PlaylistData();
+
             try
             {
                 WebClient client = new WebClient();
                 String html = "";
+                String embedUrl = "";
                 var xhtml = new HtmlAgilityPack.HtmlDocument();
 
                 html = await client.DownloadStringTaskAsync(link);
@@ -359,14 +386,30 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
                 var span = xhtml.DocumentNode.DescendantNodes().Where(h => h.Name == "span" && h.Attributes.Any(attr => attr.Value.Equals("eow-title"))).FirstOrDefault();
 
+                if (span != null)
+                    plist.name = span.InnerHtml.Replace("\n", "").TrimStart().TrimEnd(); ;
+
+                var meta = xhtml.DocumentNode.DescendantNodes().Where(h => h.Name == "meta" && h.Attributes.Any(attr => attr.Value == "og:video:url")).FirstOrDefault();
+
+                if (meta != null)
+                {
+                    embedUrl = meta.InnerHtml.Replace("\n", "");
+
+                    html = await client.DownloadStringTaskAsync(embedUrl);
+                    xhtml.LoadHtml(html);
+
+                    //TODO: FINISH RESEARCHING WHERE TO FIND VIDEO LENGTH AND ADD TO PLIST
+                    plist.length = "0";
+                }
+
                 client.Dispose();
 
-                return span.InnerHtml.Replace("\n", "");
+                return plist;
             }
             catch (Exception err)
             {
                 LogError("Error: identifySongFromLink() - " + err.StackTrace + "\n\n" + err.Message + "\nlink: " + link);
-                return "";
+                return plist;
             }
         }
 
@@ -445,7 +488,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 if (!String.IsNullOrEmpty(remoteip))
                     LogDebug("\nIpaddress: " + remoteip + "\n");
 
-                if (await waitForDataToBecomeAvailable(1000, accSock))
+                if (await waitForDataToBecomeAvailable(2000, accSock))
                 {
                     recvd = accSock.Receive(requbytes);
                     request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
@@ -516,7 +559,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                         else
                                             attr.Value = "http:" + attr.Value;
 
-                                    attr.Value = "http://" + ipAddrress + ":8083/proxy*" + attr.Value + "|";
+                                    attr.Value = "http://" + setting.IpAddress + ":8083/proxy*" + attr.Value + "|";
                                 }
                             }
 
@@ -530,7 +573,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                         else
                                             attr.Value = "http:" + attr.Value;
 
-                                    attr.Value = "http://" + ipAddrress + ":8083/proxy*" + attr.Value + "|";
+                                    attr.Value = "http://" + setting.IpAddress + ":8083/proxy*" + attr.Value + "|";
                                 }
                             }
 
@@ -581,137 +624,152 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
             try
             {
-                await Task.Run(async() =>
+                //ThreadPool.QueueUserWorkItem(async (Object o) =>
+                var mainthread = new Thread(new ThreadStart(async() =>
                 {
                     while (true)
                     {
-                       restart:
-                        LogDebug("\nMpgrabber onStart()\n");
+                    restart:
 
-                        IPAddress ipAddr = Dns.GetHostAddresses(Dns.GetHostName()).ToList().Find(ip => ip.AddressFamily == AddressFamily.InterNetwork && ip.ToString().IndexOf("10.13.22") > -1);
-                        ServicePointManager.ServerCertificateValidationCallback = delegate
+                        try
                         {
-                            return true;
-                        };
+                            LogDebug("\nMpgrabber onStart()\n");
 
-                        await Task.WhenAny(new Task[]
-                        {
-                            Task.Run(async() => 
+                            IPAddress ipAddr;
+                            /*   ServicePointManager.ServerCertificateValidationCallback = delegate
+                               {
+                                  return true;
+                               };*/
+
+                            Task.WaitAll(new Task[]
                             {
-                                Socket listeningSocket1 = null;
-
-                                LogDebug("\nStarting thread\n");
-
-                                while (true)
+                                Task.Run(async() => 
                                 {
-                                    LogDebug("\nLoop start for port 8081\n");
+                                    Socket listeningSocket1 = null;
 
-                                    try
+                                    LogDebug("\nStarting thread\n");
+
+                                    while (true)
                                     {
-                                        if (listeningSocket1 == null) 
-                                            listeningSocket1 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
-
-                                        if (listeningSocket1.LocalEndPoint == null)
+                                        try
                                         {
-                                            listeningSocket1.Bind(new IPEndPoint(ipAddr, 8081));
-                                            listeningSocket1.Listen(int.MaxValue);
+                                            ipAddr = Dns.GetHostAddresses(Dns.GetHostName()).ToList().Find(ip => ip.AddressFamily == AddressFamily.InterNetwork && ip.ToString().IndexOf(setting.IpAddress) > -1);
+                                            LogDebug("\nLoop start for port 8081\n");
+
+                                            if (listeningSocket1 == null) 
+                                                listeningSocket1 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
+
+                                            if (listeningSocket1.LocalEndPoint == null)
+                                            {
+                                                listeningSocket1.Bind(new IPEndPoint(ipAddr, 8081));
+                                                listeningSocket1.Listen(int.MaxValue);
+                                            }
+
+                                            await processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket1.BeginAccept, listeningSocket1.EndAccept, true));
                                         }
-
-                                        await call(await Task.Factory.FromAsync<Socket>(listeningSocket1.BeginAccept, listeningSocket1.EndAccept, true));
-                                    }
-                                    catch(Exception err)
-                                    {
-                                        LogError("\nError in download thread: " + err.Message + "\n\n" + err.StackTrace);
-                                    }
-                                }
-                            }),
-                            Task.Run(async() => 
-                            {                                
-                                Socket listeningSocket2 = null;
-
-                                while (true)
-                                {
-                                    LogDebug("\nLoop start for port 8080\n");
-
-                                    try
-                                    {
-                                        if (listeningSocket2 == null) 
-                                            listeningSocket2 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
-
-                                        if (listeningSocket2.LocalEndPoint == null)
+                                        catch(Exception err)
                                         {
-                                            listeningSocket2.Bind(new IPEndPoint(ipAddr, 8080));
-                                            listeningSocket2.Listen(int.MaxValue);
+                                            LogError("\nError in download thread: " + err.Message + "\n\n" + err.StackTrace);
                                         }
-
-                                        await call(await Task.Factory.FromAsync<Socket>(listeningSocket2.BeginAccept, listeningSocket2.EndAccept, true));
-                                        GC.Collect(2, GCCollectionMode.Optimized, false);
                                     }
-                                    catch(Exception err)
+                                }),
+                                Task.Run(async() => 
+                                {                                
+                                    Socket listeningSocket2 = null;
+
+                                    while (true)
                                     {
-                                        LogError("\nError in main thread: " + err.Message + "\n\n" + err.StackTrace);
-                                    }
-                                }
-                            }),
-                            Task.Run(async() => 
-                            {                                
-                                Socket listeningSocket3 = null;
-
-                                while (true)
-                                {
-                                    LogDebug("\nLoop start for port 8082\n");
-
-                                    try
-                                    {
-                                        if (listeningSocket3 == null) 
-                                            listeningSocket3 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
-
-                                        if (listeningSocket3.LocalEndPoint == null)
+                                        try
                                         {
-                                            listeningSocket3.Bind(new IPEndPoint(ipAddr, 8082));
-                                            listeningSocket3.Listen(int.MaxValue);
+                                            ipAddr = Dns.GetHostAddresses(Dns.GetHostName()).ToList().Find(ip => ip.AddressFamily == AddressFamily.InterNetwork && ip.ToString().IndexOf(setting.IpAddress) > -1);
+                                            LogDebug("\nLoop start for port 8080\n");
+
+                                            if (listeningSocket2 == null) 
+                                                listeningSocket2 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
+
+                                            if (listeningSocket2.LocalEndPoint == null)
+                                            {
+                                                listeningSocket2.Bind(new IPEndPoint(ipAddr, 8080));
+                                                listeningSocket2.Listen(int.MaxValue);
+                                            }
+
+                                            await processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket2.BeginAccept, listeningSocket2.EndAccept, true));
+                                            GC.Collect(2, GCCollectionMode.Optimized, false);
                                         }
-
-                                        await call(await Task.Factory.FromAsync<Socket>(listeningSocket3.BeginAccept, listeningSocket3.EndAccept, true));
-                                    }
-                                    catch(Exception err)
-                                    {
-                                        LogError("\nError in identify thread: " + err.Message + "\n\n" + err.StackTrace);
-                                    }
-                                }
-                            }),
-                            Task.Run(async() => 
-                            {                                
-                                Socket listeningSocket4 = null;
-
-                                while (true)
-                                {
-                                    LogDebug("\nLoop start for port 8083\n");
-
-                                    try
-                                    {
-                                        if (listeningSocket4 == null) 
-                                            listeningSocket4 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
-
-                                        if (listeningSocket4.LocalEndPoint == null)
+                                        catch(Exception err)
                                         {
-                                            listeningSocket4.Bind(new IPEndPoint(ipAddr, 8083));
-                                            listeningSocket4.Listen(int.MaxValue);
+                                            LogError("\nError in main thread: " + err.Message + "\n\n" + err.StackTrace);
                                         }
-
-                                        await proxy(await Task.Factory.FromAsync<Socket>(listeningSocket4.BeginAccept, listeningSocket4.EndAccept, true));
                                     }
-                                    catch(Exception err)
+                                }),
+                                Task.Run(async() => 
+                                {                                
+                                    Socket listeningSocket3 = null;
+
+                                    while (true)
                                     {
-                                        LogError("\nError in proxy thread: " + err.Message + "\n\n" + err.StackTrace);
-                                    }
-                                }
-                            })
-                        });
+                                        try
+                                        {
+                                            ipAddr = Dns.GetHostAddresses(Dns.GetHostName()).ToList().Find(ip => ip.AddressFamily == AddressFamily.InterNetwork && ip.ToString().IndexOf(setting.IpAddress) > -1);
+                                            LogDebug("\nLoop start for port 8082\n");
 
+                                            if (listeningSocket3 == null) 
+                                                listeningSocket3 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
+
+                                            if (listeningSocket3.LocalEndPoint == null)
+                                            {
+                                                listeningSocket3.Bind(new IPEndPoint(ipAddr, 8082));
+                                                listeningSocket3.Listen(int.MaxValue);
+                                            }
+
+                                            await processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket3.BeginAccept, listeningSocket3.EndAccept, true));
+                                        }
+                                        catch(Exception err)
+                                        {
+                                            LogError("\nError in identify thread: " + err.Message + "\n\n" + err.StackTrace);
+                                        }
+                                    }
+                                }),
+                                Task.Run(async() => 
+                                {                                
+                                    Socket listeningSocket4 = null;
+
+                                    while (true)
+                                    {
+                                        try
+                                        {
+                                            ipAddr = Dns.GetHostAddresses(Dns.GetHostName()).ToList().Find(ip => ip.AddressFamily == AddressFamily.InterNetwork && ip.ToString().IndexOf(setting.IpAddress) > -1);
+                                            LogDebug("\nLoop start for port 8083\n");
+
+                                            if (listeningSocket4 == null) 
+                                                listeningSocket4 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
+
+                                            if (listeningSocket4.LocalEndPoint == null)
+                                            {
+                                                listeningSocket4.Bind(new IPEndPoint(ipAddr, 8083));
+                                                listeningSocket4.Listen(int.MaxValue);
+                                            }
+
+                                            await proxy(await Task.Factory.FromAsync<Socket>(listeningSocket4.BeginAccept, listeningSocket4.EndAccept, true));
+                                        }
+                                        catch(Exception err)
+                                        {
+                                            LogError("\nError in proxy thread: " + err.Message + "\n\n" + err.StackTrace);
+                                        }
+                                    }
+                                })
+                            });
+                        }
+                        catch (Exception err)
+                        {
+
+                        }
+
+                        LogDebug("\nRestarting\n");
                         goto restart;
                     }
-                });
+                }));
+                mainthread.Start();
             }
             catch (Exception err)
             {
@@ -731,8 +789,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
         public void Start(String[] args)
         {
-            if (System.IO.File.Exists(logfilename))
-                System.IO.File.Delete(logfilename);
+            if (System.IO.File.Exists(setting.DebugFileName))
+                System.IO.File.Delete(setting.DebugFileName);
 
             LogDebug("\nStarting...\n");
             OnStart(args);

@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<Mpgrabber>
+  <ErrorLog>
+    <FileName>C:\mpgrabber\errorlog.log</FileName>
+  </ErrorLog>
+  <DebugLog>
+    <FileName>C:\mpgrabber\debuglog.log</FileName>    
+  </DebugLog>
+  <IpAddress>10.13.22.88</IpAddress>
+  <Debug>true</Debug>
+</Mpgrabber>

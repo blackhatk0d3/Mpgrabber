@@ -37,11 +37,19 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             Mpgrabber service = new Mpgrabber();
             if (Environment.UserInteractive)
             {
-                service.Start(null);            
+                service.Start(null);
+                service.Disposed += delegate
+                {
+
+                };
             }
             else
             {
                 ServiceBase.Run(service);
+                service.Disposed += delegate
+                {
+
+                };
             }
 #else    // If not in debug mode, attempt to start service as usual
             ///////////////////////////////////
@@ -55,18 +63,21 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
         private static void StartReleaseMode()
         {
+            Mpgrabber mpg = new Mpgrabber();
+
             try
             {
                 ServiceBase[] ServicesToRun;
+                mpg = new Mpgrabber();
                 ServicesToRun = new ServiceBase[] 
                 { 
-                    new Mpgrabber() 
+                    mpg
                 };
                 ServiceBase.Run(ServicesToRun);
             }
             catch (Exception err)
             {
-                return;
+                Mpgrabber.LogErrorII("\n" + err.Message + "\n\n" + err.StackTrace);
             }
         }
     }
