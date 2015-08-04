@@ -26,7 +26,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
         {
             try
             {
-                XElement mpgrabberConfig = XElement.Load("MpgrabberSettings.xml");
+                XElement mpgrabberConfig = XElement.Load("C:\\mpgrabber\\MpgrabberSettings.xml");
                 var debugLog = mpgrabberConfig.Elements().Where(xml => xml.Name == "DebugLog");
                 var errorLog = mpgrabberConfig.Elements().Where(xml => xml.Name == "ErrorLog");
                 var debug = mpgrabberConfig.Elements().Where(xml => xml.Name == "Debug");

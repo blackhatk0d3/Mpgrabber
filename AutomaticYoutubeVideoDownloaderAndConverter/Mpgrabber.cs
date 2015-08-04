@@ -40,11 +40,11 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 var i = 0;
                 TimeSpan totTime;
 
-                while (youtubeSock.Available == 0 && i++ < 15000)
+                while (youtubeSock.Available == 0 && i++ < 150000)
                 {
-                    System.Threading.Thread.Sleep(5);
+                    //System.Threading.Thread.Sleep(1);
 
-                    if ((totTime = DateTime.Now.Subtract(startTime)).Milliseconds > numofmillisecondstowait)
+                    if ((totTime = DateTime.Now.Subtract(startTime)).TotalMilliseconds > numofmillisecondstowait)
                     {
                         if (youtubeSock.Connected)
                         {
@@ -98,6 +98,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
             return "";
         }
+
+        //private async Task convrt
 
         private async Task processCmd(Socket accSock)
         {
@@ -226,7 +228,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                             //WRITE CODE TO CHECK IF ITS BOTH MP3 AND MP4. IF SO ALTER JSCRIPT TO DOWNLOAD BOTJ FILES. ALSO, ADD
                             //FFMPEG CODE TO MAKE MP4 AN MP3. EX: ffmpeg.exe -i song.mp4 -b:a 192K -vn song2.mp3
                             System.IO.File.Move(filetomove, "C:\\temp\\music\\" + filetomove.Replace("C:\\temp\\", ""));
-                            respStr = "if(!window.open(\"http://\" + ip + \":8080/*" + id + "|\")) { document.getElementById('error').innerHTML = ('<font color=\"red\"><strong>Please enable your popup blocker for mpgrabber.com</strong></font>'); window.location.href = \"http://\" + ip + \":8080/*" + id + "|\"; } setTimeout(continueProcessing, 500);";
+                            respStr = "if(!window.open(\"http://\" + ip + \":8080/*" + id + "|\")) { document.getElementById('error').innerHTML = ('<font color=\"red\"><strong>Please enable your popup blocker for mpgrabber.com</strong></font>'); window.location.href = \"http://\" + ip + \":8080/*" + id + "|\"; converting = false; } setTimeout(continueProcessing, 500);";
                             responseHeaders.Append("Content-Length: ");
                             responseHeaders.Append(respStr.Length);
                             responseHeaders.Append("\r\n\r\n");
@@ -370,6 +372,18 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
         }
 
+        public static void LogDebugII(String logmsg)
+        {
+            try
+            {
+                System.IO.File.AppendAllText("C:\\mpgrabber\\debuglog.log", DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "  " + logmsg);
+            }
+            catch
+            {
+                //System.IO.File.AppendAllText("C:\\mpgrabber\\lawg.log", logmsg);
+            }
+        }
+
         private async Task<PlaylistData> identifyDataFromLink(String link)
         {
             PlaylistData plist = new PlaylistData();
@@ -378,7 +392,6 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             {
                 WebClient client = new WebClient();
                 String html = "";
-                String embedUrl = "";
                 var xhtml = new HtmlAgilityPack.HtmlDocument();
 
                 html = await client.DownloadStringTaskAsync(link);
@@ -389,19 +402,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 if (span != null)
                     plist.name = span.InnerHtml.Replace("\n", "").TrimStart().TrimEnd(); ;
 
-                var meta = xhtml.DocumentNode.DescendantNodes().Where(h => h.Name == "meta" && h.Attributes.Any(attr => attr.Value == "og:video:url")).FirstOrDefault();
-
-                if (meta != null)
-                {
-                    embedUrl = meta.InnerHtml.Replace("\n", "");
-
-                    html = await client.DownloadStringTaskAsync(embedUrl);
-                    xhtml.LoadHtml(html);
-
-                    //TODO: FINISH RESEARCHING WHERE TO FIND VIDEO LENGTH AND ADD TO PLIST
-                    plist.length = "0";
-                }
-
+                plist.length = "0";
                 client.Dispose();
 
                 return plist;
@@ -789,8 +790,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
         public void Start(String[] args)
         {
-            if (System.IO.File.Exists(setting.DebugFileName))
-                System.IO.File.Delete(setting.DebugFileName);
+            //if (System.IO.File.Exists(setting.DebugFileName))
+            //    System.IO.File.Delete(setting.DebugFileName);
 
             LogDebug("\nStarting...\n");
             OnStart(args);
@@ -798,6 +799,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
         public Mpgrabber()
         {
+            LogDebug("\ndbgfilename: " + setting.DebugFileName + "\nerrfilename: " + setting.ErrorFileName + "\nDebug: " + setting.Debug + "\nIpaddress: " + setting.IpAddress + "\n");
         }
 
         protected override void Dispose(bool disposing)

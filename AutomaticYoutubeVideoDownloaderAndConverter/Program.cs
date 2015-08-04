@@ -63,16 +63,14 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
         private static void StartReleaseMode()
         {
-            Mpgrabber mpg = new Mpgrabber();
-
             try
             {
                 ServiceBase[] ServicesToRun;
-                mpg = new Mpgrabber();
                 ServicesToRun = new ServiceBase[] 
                 { 
-                    mpg
+                     new Mpgrabber()
                 };
+                Mpgrabber.LogDebugII("\nAbout to run service....");
                 ServiceBase.Run(ServicesToRun);
             }
             catch (Exception err)

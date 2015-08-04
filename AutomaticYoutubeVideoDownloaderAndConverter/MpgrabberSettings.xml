@@ -6,6 +6,6 @@
   <DebugLog>
     <FileName>C:\mpgrabber\debuglog.log</FileName>    
   </DebugLog>
-  <IpAddress>10.13.22.88</IpAddress>
+  <IpAddress>10.13.22.87</IpAddress>
   <Debug>true</Debug>
 </Mpgrabber>
