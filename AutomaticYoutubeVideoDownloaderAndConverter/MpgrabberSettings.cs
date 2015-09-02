@@ -29,6 +29,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 XElement mpgrabberConfig = XElement.Load("C:\\mpgrabber\\MpgrabberSettings.xml");
                 var debugLog = mpgrabberConfig.Elements().Where(xml => xml.Name == "DebugLog");
                 var errorLog = mpgrabberConfig.Elements().Where(xml => xml.Name == "ErrorLog");
+                var httpRequestLog = mpgrabberConfig.Elements().Where(xml => xml.Name == "HttpRequestLog");
                 var debug = mpgrabberConfig.Elements().Where(xml => xml.Name == "Debug");
                 var ipAddress = mpgrabberConfig.Elements().Where(xml => xml.Name == "IpAddress");
 
@@ -50,6 +51,16 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                     {
                         var fname = x.Element("FileName").Value;
                         ErrorFileName = fname.ToString();
+                    }
+                }
+                if(httpRequestLog.Any())
+                {
+                    var x = httpRequestLog.First();
+
+                    if(x.Name == "HttpRequestLog")
+                    {
+                        var fname = x.Element("FileName").Value;
+                        HttpRequestFileName = fname.ToString();
                     }
                 }
                 if (debug.Any())
@@ -81,6 +92,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
         public String DebugFileName { get; set; }
         public String ErrorFileName { get; set; }
+        public String HttpRequestFileName { get; set; }
         public String IpAddress { get; set; }
         public Boolean Debug { get; set; }
     }

@@ -6,6 +6,9 @@
   <DebugLog>
     <FileName>C:\mpgrabber\debuglog.log</FileName>    
   </DebugLog>
-  <IpAddress>10.13.22.87</IpAddress>
+  <HttpRequestLog>
+    <FileName>C:\mpgrabber\httpreq.log</FileName>
+  </HttpRequestLog>
+  <IpAddress>10.0.0.15</IpAddress>
   <Debug>true</Debug>
 </Mpgrabber>

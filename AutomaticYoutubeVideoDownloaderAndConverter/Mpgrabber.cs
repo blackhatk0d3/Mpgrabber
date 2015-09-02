@@ -19,6 +19,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
     class Mpgrabber : ServiceBase
     {
         MpgrabberSettings setting = new MpgrabberSettings();
+        String proxyjs = File.ReadAllText("C:\\mpgrabber\\proxyjs.js");
 
         public struct PlaylistData
         {
@@ -120,7 +121,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 int len = 0;
 
                 if (!String.IsNullOrEmpty(remoteip))
-                    LogDebug("\nIpaddress: " + remoteip + "\n");
+                    LogHttpReq("\nIpaddress: " + remoteip + "\n");
 
                 if (!await waitForDataToBecomeAvailable(2000, accSock))
                     return;
@@ -128,7 +129,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 recvd = accSock.Receive(requbytes);
                 request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
 
-                LogDebug("\n" + request + "\n");
+                LogHttpReq("\n" + request + "\n");
 
                 if (request.IndexOf("/utube*") > -1)
                 {
@@ -215,8 +216,14 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                             FileName = "youtube-dl.exe",
                             WorkingDirectory = "C:\\temp\\",
                             Arguments = " " + youtubeLink + arguments_str,
-                            CreateNoWindow = true
+                            CreateNoWindow = false,
+                            RedirectStandardOutput = true
                         });
+
+                        youtubedl.OutputDataReceived += (Object o, DataReceivedEventArgs drea) =>
+                        {
+
+                        };
 
                         await Program.WaitForExitAsync(youtubedl);
                         youtubedl.Dispose();
@@ -357,6 +364,16 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
         }
 
+        private void LogHttpReq(String logmsg)
+        {
+            try
+            {
+                System.IO.File.AppendAllText(setting.HttpRequestFileName, DateTime.Now.ToShortDateString() + " " + DateTime.Now.ToShortTimeString() + "  " + logmsg);
+            }
+            catch
+            {  }
+        }
+
         private void LogDebug(String logmsg)
         {
             if (setting.Debug)
@@ -397,10 +414,22 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                 html = await client.DownloadStringTaskAsync(link);
                 xhtml.LoadHtml(html);
 
-                var span = xhtml.DocumentNode.DescendantNodes().Where(h => h.Name == "span" && h.Attributes.Any(attr => attr.Value.Equals("eow-title"))).FirstOrDefault();
+                if (link.IndexOf("&list") > -1 || link.IndexOf("playlist") > -1)
+                {
+                    var div = xhtml.DocumentNode.DescendantNodes().Where(h => h.Name == "div" && h.Attributes.Any(attr => attr.Value == "playlist-header-content")).FirstOrDefault();
 
-                if (span != null)
-                    plist.name = span.InnerHtml.Replace("\n", "").TrimStart().TrimEnd(); ;
+                    if(div != null)
+                    {
+                        plist.name = div.Attributes.FirstOrDefault(a => a.Name == "data-list-title").Value;
+                    }
+                }
+                else
+                {
+                    var span = xhtml.DocumentNode.DescendantNodes().Where(h => h.Name == "span" && h.Attributes.Any(attr => attr.Value.Equals("eow-title"))).FirstOrDefault();
+
+                    if (span != null)
+                        plist.name = span.InnerHtml.Replace("\n", "").TrimStart().TrimEnd();
+                }
 
                 plist.length = "0";
                 client.Dispose();
@@ -487,14 +516,47 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             try
             {
                 if (!String.IsNullOrEmpty(remoteip))
-                    LogDebug("\nIpaddress: " + remoteip + "\n");
+                    LogHttpReq("\nIpaddress: " + remoteip + "\n");
 
                 if (await waitForDataToBecomeAvailable(2000, accSock))
                 {
                     recvd = accSock.Receive(requbytes);
                     request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
 
-                    if ((start = request.IndexOf("/proxy*")) > -1)
+                    if ((start = request.IndexOf("/proxySrch*")) > -1)
+                    {
+                        if ((start = request.IndexOf('*')) > -1)
+                        {
+                            if ((len = request.IndexOf("%7C")) > -1)
+                            {
+                                List<PlaylistData> plistdata = new List<PlaylistData>(); 
+
+                                link = request.Substring(start+1, (len - start -1));
+                                html = await client.DownloadStringTaskAsync(string.Format("https://www.youtube.com/results?search_query={0}", link).Replace(" ", "+"));
+                                xhtml.LoadHtml(html);
+
+                                if (xhtml.DocumentNode != null)
+                                {
+                                    if (xhtml.DocumentNode.OuterHtml != null)
+                                    {
+                                        foreach (var node in xhtml.DocumentNode.DescendantNodes().Where(h => h.Attributes != null && h.Attributes.Any(attr => attr.Value.Equals("yt-lockup-dismissable"))))
+                                        {
+                                            foreach (var subnode in node.DescendantNodes())
+                                            {
+                                                PlaylistData tmp = new PlaylistData();
+
+                                                if(subnode.Attributes.Any(attr => attr.Value == "yt-uix-sessionlink yt-uix-tile-link yt-ui-ellipsis yt-ui-ellipsis-2       spf-link "))
+                                                {
+                                                    tmp.name = subnode.InnerHtml;    
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else if ((start = request.IndexOf("/proxy*")) > -1)
                     {
                         if (request.IndexOf("referer") < start)
                         {
@@ -527,12 +589,21 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                         link = link.Replace(" ", "");
                     }
 
+                    LogHttpReq(request);
+
                     if (request.IndexOf("text") > -1 && request.IndexOf("Accept: image") == -1 || ((request.IndexOf("Accept") == -1 || request.IndexOf("Accept: */*") > -1) && request.IndexOf("Content-type") == -1))
                     {
                         if (request.IndexOf("GET ") == 0)
                         {
                             html = await client.DownloadStringTaskAsync(link);
                             //html = await httpRequest(accSock, 1, request, link);
+
+                            if (request.IndexOf("GET /proxy*http://www.youtube.com") > -1 || request.IndexOf("GET /results?search_query=") > -1)
+                            {
+                                html = html.Replace("</body></html>", "");
+                                html += proxyjs;
+                            }
+
                             xhtml.LoadHtml(html);
                         }
                         else
@@ -619,14 +690,14 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
         }
 
-        protected override async void OnStart(string[] args)
+        protected override void OnStart(string[] args)
         {
             LogDebug("\nMpgrabber OnStart()\n");
 
             try
             {
                 //ThreadPool.QueueUserWorkItem(async (Object o) =>
-                var mainthread = new Thread(new ThreadStart(async() =>
+                var mainthread = new Thread(new ThreadStart(() =>
                 {
                     while (true)
                     {
