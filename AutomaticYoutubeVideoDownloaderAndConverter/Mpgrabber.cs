@@ -26,6 +26,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             public String link;
             public String name;
             public String length;
+            public String imgsrc;
         }
 
         private String createId()
@@ -216,14 +217,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                             FileName = "youtube-dl.exe",
                             WorkingDirectory = "C:\\temp\\",
                             Arguments = " " + youtubeLink + arguments_str,
-                            CreateNoWindow = false,
-                            RedirectStandardOutput = true
+                            CreateNoWindow = false
                         });
-
-                        youtubedl.OutputDataReceived += (Object o, DataReceivedEventArgs drea) =>
-                        {
-
-                        };
 
                         await Program.WaitForExitAsync(youtubedl);
                         youtubedl.Dispose();
@@ -504,11 +499,12 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             Byte[] requbytes = new Byte[8192];
             Byte[] image = null;
             List<Byte> respbs = new List<Byte>();
+            List<PlaylistData> plistdata = new List<PlaylistData>(); 
             Int32 recvd = -1;
             Int32 start = -1;
             Int32 len = -1;
             String remoteip = ((accSock.RemoteEndPoint is IPEndPoint) ? ((IPEndPoint)accSock.RemoteEndPoint).Address.ToString() : null);
-            String responseHeaders = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-type: text/html\r\n";
+            StringBuilder responseHeaders = new StringBuilder("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-type: text/html\r\n");
             String link = "";
             String request = "";
             String html = "";
@@ -529,8 +525,6 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                         {
                             if ((len = request.IndexOf("%7C")) > -1)
                             {
-                                List<PlaylistData> plistdata = new List<PlaylistData>(); 
-
                                 link = request.Substring(start+1, (len - start -1));
                                 html = await client.DownloadStringTaskAsync(string.Format("https://www.youtube.com/results?search_query={0}", link).Replace(" ", "+"));
                                 xhtml.LoadHtml(html);
@@ -547,7 +541,22 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
                                                 if(subnode.Attributes.Any(attr => attr.Value == "yt-uix-sessionlink yt-uix-tile-link yt-ui-ellipsis yt-ui-ellipsis-2       spf-link "))
                                                 {
-                                                    tmp.name = subnode.InnerHtml;    
+                                                    tmp.name = subnode.InnerHtml;   
+                                                    tmp.link = subnode.Attributes["href"].Value;
+
+                                                    foreach (var subnodeII in node.ChildNodes[0].ChildNodes[0].ChildNodes)
+                                                    {
+                                                        if(subnodeII.Name == "span")
+                                                        {
+                                                            tmp.length = subnodeII.InnerHtml;
+                                                            break;
+                                                        }
+                                                    }
+
+                                                    if(!String.IsNullOrEmpty(tmp.length))
+                                                    {
+                                                        plistdata.Add(tmp);
+                                                    }
                                                 }
                                             }
                                         }
@@ -555,11 +564,43 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                 }
                             }
                         }
+
+                        if(plistdata.Any())
+                        {
+                            StringBuilder execcode = new StringBuilder("plistdata = [");
+                            PlaylistData data;
+
+                            for (var i = 0; i < plistdata.Count; i++)
+                            {
+                                data = plistdata[i];
+
+                                execcode.Append("{ link: '");
+                                execcode.Append(data.link);
+                                execcode.Append("', name: '");
+                                execcode.Append(data.name.Replace("\n", "").Replace("\t", ""));                             
+                                execcode.Append("', length: '");
+                                execcode.Append(data.length.Replace("\n", "").Replace("\t", ""));
+                                execcode.Append("' },");
+                            }
+
+                            execcode.Remove((execcode.Length - 1), 1);
+                            execcode.Append("]; showData();");
+
+                            responseHeaders.Append("Content-Length: ");
+                            responseHeaders.Append(execcode.Length);
+                            responseHeaders.Append("\r\n\r\n");
+
+                            accSock.Send(Encoding.ASCII.GetBytes(responseHeaders.ToString() + execcode));
+                            return;
+                        
+                        }
                     }
                     else if ((start = request.IndexOf("/proxy*")) > -1)
                     {
                         if (request.IndexOf("referer") < start)
                         {
+                            String referer = "";
+
                             start += 7;
 
                             if (request.IndexOf('|', start) > -1)
@@ -568,6 +609,12 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                 len = request.IndexOf("%7C", start) - start;
 
                             link = request.Substring(start, len);
+
+                            var begin = request.IndexOf("Referer: ") + "Referer: ".Length;
+                            var end = request.IndexOf('\n', begin);
+
+                            referer = request.Substring(begin, (end - begin - 1));
+                            request = request.Replace(referer, "http://www.youtube.com");
                         }
                         else
                         {
@@ -649,15 +696,19 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                 }
                             }
 
-                            responseHeaders += "Content-Length: " + xhtml.DocumentNode.OuterHtml.Length + "\r\n\r\n";
-                            accSock.Send(Encoding.ASCII.GetBytes(responseHeaders + xhtml.DocumentNode.OuterHtml));
+                            responseHeaders.Append("Content-Length: ");
+                            responseHeaders.Append(xhtml.DocumentNode.OuterHtml.Length);
+                            responseHeaders.Append("\r\n\r\n");
+                            accSock.Send(Encoding.ASCII.GetBytes(responseHeaders.ToString() + xhtml.DocumentNode.OuterHtml));
                             accSock.Shutdown(SocketShutdown.Both);
                             accSock.Close();
                         }
                         else
                         {
-                            responseHeaders += "Content-Length: " + html.Length + "\r\n\r\n";
-                            accSock.Send(Encoding.ASCII.GetBytes(responseHeaders + html));
+                            responseHeaders.Append("Content-Length: ");
+                            responseHeaders.Append(html.Length);
+                            responseHeaders.Append("\r\n\r\n");
+                            accSock.Send(Encoding.ASCII.GetBytes(responseHeaders.ToString() + html));
                             accSock.Shutdown(SocketShutdown.Both);
                             accSock.Close();
                         }
@@ -665,8 +716,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                     else
                     {
                         image = await client.DownloadDataTaskAsync(link);
-                        responseHeaders += "Content-Length: " + image.Length + "\r\n\r\n";
-                        respbs.AddRange(Encoding.ASCII.GetBytes(responseHeaders));
+                        responseHeaders.AppendFormat("{0}{1}{2}", "Content-Length: ", image.Length, "\r\n\r\n");
+                        respbs.AddRange(Encoding.ASCII.GetBytes(responseHeaders.ToString()));
                         respbs.AddRange(image);
                         accSock.Send(respbs.ToArray());
                         accSock.Shutdown(SocketShutdown.Both);
@@ -737,7 +788,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                                 listeningSocket1.Listen(int.MaxValue);
                                             }
 
-                                            await processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket1.BeginAccept, listeningSocket1.EndAccept, true));
+                                            processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket1.BeginAccept, listeningSocket1.EndAccept, true));
                                         }
                                         catch(Exception err)
                                         {
@@ -765,7 +816,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                                 listeningSocket2.Listen(int.MaxValue);
                                             }
 
-                                            await processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket2.BeginAccept, listeningSocket2.EndAccept, true));
+                                            processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket2.BeginAccept, listeningSocket2.EndAccept, true));
                                             GC.Collect(2, GCCollectionMode.Optimized, false);
                                         }
                                         catch(Exception err)
@@ -794,7 +845,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                                 listeningSocket3.Listen(int.MaxValue);
                                             }
 
-                                            await processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket3.BeginAccept, listeningSocket3.EndAccept, true));
+                                            processCmd(await Task.Factory.FromAsync<Socket>(listeningSocket3.BeginAccept, listeningSocket3.EndAccept, true));
                                         }
                                         catch(Exception err)
                                         {
@@ -822,7 +873,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                                 listeningSocket4.Listen(int.MaxValue);
                                             }
 
-                                            await proxy(await Task.Factory.FromAsync<Socket>(listeningSocket4.BeginAccept, listeningSocket4.EndAccept, true));
+                                           proxy(await Task.Factory.FromAsync<Socket>(listeningSocket4.BeginAccept, listeningSocket4.EndAccept, true));
                                         }
                                         catch(Exception err)
                                         {
