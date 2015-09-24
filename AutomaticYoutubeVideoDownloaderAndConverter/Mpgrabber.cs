@@ -26,7 +26,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             public String link;
             public String name;
             public String length;
-            public String imgsrc;
+            public Boolean protectedVid;
         }
 
         private String createId()
@@ -65,13 +65,13 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             });
         }
 
-        private async Task<String> httpRequest(Socket accSock, Byte method, String headerAndBodyRaw, String link)
+        private async Task<String> httpRequest(Byte method, String headerAndBodyRaw, String link)
         {
-            Socket youtubeSock = new Socket(AddressFamily.InterNetwork, SocketType.Seqpacket, ProtocolType.IPv4);
+            Socket youtubeSock = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             Byte[] requbytes = new Byte[8192];
             Int32 recvd = -1;
             String request = "";
-            String headerAndBody = ((method == 1) ? "GET " : "POST ") + link + headerAndBodyRaw.Substring(headerAndBodyRaw.IndexOf("HTTP/1.1") - 1);
+            String headerAndBody = ((method == 1) ? "GET /" : "POST /") + link + headerAndBodyRaw.Substring(headerAndBodyRaw.IndexOf("HTTP/1.1") - 1);
 
             try
             {
@@ -79,7 +79,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
                 if (youtubeSock.Connected)
                 {
-                    var buffer = Encoding.ASCII.GetBytes(headerAndBody);
+                    var buffer = Encoding.ASCII.GetBytes(headerAndBodyRaw);
                     int bytessent = await Task.Factory.FromAsync<int>(youtubeSock.BeginSend(buffer, 0, buffer.Length, SocketFlags.None, null, youtubeSock), youtubeSock.EndSend);
 
                     if (await waitForDataToBecomeAvailable(2000, youtubeSock))
@@ -95,7 +95,7 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             }
             catch (Exception err)
             {
-                LogError("\nhttpRequest() - Error: " + err.Message + "\n\n" + err.StackTrace + "\n" + headerAndBody);
+                LogError("\nhttpRequest() - Error: " + err.Message + "\n\n" + err.StackTrace + "\n" + headerAndBodyRaw);
             }
 
             return "";
@@ -499,15 +499,18 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
             Byte[] requbytes = new Byte[8192];
             Byte[] image = null;
             List<Byte> respbs = new List<Byte>();
+            List<Byte> requbs = new List<Byte>();
             List<PlaylistData> plistdata = new List<PlaylistData>(); 
             Int32 recvd = -1;
             Int32 start = -1;
             Int32 len = -1;
             String remoteip = ((accSock.RemoteEndPoint is IPEndPoint) ? ((IPEndPoint)accSock.RemoteEndPoint).Address.ToString() : null);
-            StringBuilder responseHeaders = new StringBuilder("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-type: text/html\r\n");
+            //StringBuilder responseHeaders = new StringBuilder("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-type: text/html\r\n");
+            StringBuilder responseHeaders = new StringBuilder("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\n");
             String link = "";
             String request = "";
             String html = "";
+            Boolean overrideResp = false;
 
             try
             {
@@ -516,8 +519,13 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
                 if (await waitForDataToBecomeAvailable(2000, accSock))
                 {
-                    recvd = accSock.Receive(requbytes);
-                    request = Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
+                    do
+                    {
+                        recvd = accSock.Receive(requbytes); //Allow for biiger msgs than 8k to be returned
+                        request += Encoding.ASCII.GetString(requbytes).Substring(0, recvd);
+                        requbs.AddRange(requbytes);
+                    }
+                    while (accSock.Available > 0);
 
                     if ((start = request.IndexOf("/proxySrch*")) > -1)
                     {
@@ -538,9 +546,15 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                             foreach (var subnode in node.DescendantNodes())
                                             {
                                                 PlaylistData tmp = new PlaylistData();
-
+                                                Boolean abandonsearch = false;
+                                                //FIX ALL ALGORITHMS SO IT LOOPS 1NCE THRU EVERYTHING
                                                 if(subnode.Attributes.Any(attr => attr.Value == "yt-uix-sessionlink yt-uix-tile-link yt-ui-ellipsis yt-ui-ellipsis-2       spf-link "))
                                                 {
+                                                    if (node.DescendantNodes().FirstOrDefault(span => span.Attributes.Any(attr => attr.Value == "yt-uix-tooltip yt-channel-title-icon-verified yt-sprite")) != null)
+                                                    {
+                                                        continue;
+                                                    }
+
                                                     tmp.name = subnode.InnerHtml;   
                                                     tmp.link = subnode.Attributes["href"].Value;
 
@@ -548,9 +562,28 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                                     {
                                                         if(subnodeII.Name == "span")
                                                         {
-                                                            tmp.length = subnodeII.InnerHtml;
-                                                            break;
+                                                            if (subnodeII.InnerHtml.IndexOf(":") > -1)
+                                                            {
+                                                                tmp.length = subnodeII.InnerHtml;
+                                                                break;
+                                                            }     
+                                                            else
+                                                            {
+                                                                abandonsearch = true;
+                                                                break;
+                                                            }
                                                         }
+
+                                                        if (subnodeII.Name == "div" && subnodeII.FirstChild != null && subnodeII.FirstChild.FirstChild != null && subnodeII.FirstChild.FirstChild.Attributes.Any(attr => attr.Name == "src"))
+                                                        {
+                                                            tmp.protectedVid = (subnodeII.FirstChild.FirstChild.Attributes["src"].Value.IndexOf(".jpg") > -1);
+                                                        }
+                                                    }
+
+                                                    if(abandonsearch)
+                                                    {
+                                                        abandonsearch = false;
+                                                        continue;
                                                     }
 
                                                     if(!String.IsNullOrEmpty(tmp.length))
@@ -580,7 +613,9 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                 execcode.Append(data.name.Replace("\n", "").Replace("\t", ""));                             
                                 execcode.Append("', length: '");
                                 execcode.Append(data.length.Replace("\n", "").Replace("\t", ""));
-                                execcode.Append("' },");
+                                execcode.Append("', protectedVid: ");
+                                execcode.Append(data.protectedVid.ToString().ToLower());
+                                execcode.Append(" },");
                             }
 
                             execcode.Remove((execcode.Length - 1), 1);
@@ -603,18 +638,23 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
                             start += 7;
 
-                            if (request.IndexOf('|', start) > -1)
+                            if (request.IndexOf("proxy**") > -1)
+                            {
+                                start++;
+                                len = (request.IndexOf("HTTP/1.1") - 13);
+                            }
+                            else if (request.IndexOf('|', start) > -1)
                                 len = request.IndexOf('|', start) - start;
-                            else
+                            else if (request.IndexOf("%7C", start) > -1)
                                 len = request.IndexOf("%7C", start) - start;
 
                             link = request.Substring(start, len);
 
-                            var begin = request.IndexOf("Referer: ") + "Referer: ".Length;
+                           var begin = request.IndexOf("Referer: ") + "Referer: ".Length;
                             var end = request.IndexOf('\n', begin);
 
                             referer = request.Substring(begin, (end - begin - 1));
-                            request = request.Replace(referer, "http://www.youtube.com");
+                           request = request.Replace(referer, "http://www.youtube.com");
                         }
                         else
                         {
@@ -640,22 +680,65 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
 
                     if (request.IndexOf("text") > -1 && request.IndexOf("Accept: image") == -1 || ((request.IndexOf("Accept") == -1 || request.IndexOf("Accept: */*") > -1) && request.IndexOf("Content-type") == -1))
                     {
+                        ServicePointManager.ServerCertificateValidationCallback = delegate
+                        {
+                            return true;
+                        };
+
                         if (request.IndexOf("GET ") == 0)
                         {
-                            html = await client.DownloadStringTaskAsync(link);
-                            //html = await httpRequest(accSock, 1, request, link);
+                            //if (request.IndexOf("video/webm") > -1)
+                                //request = request.Replace("video/webm", "audio/mp4");
 
-                            if (request.IndexOf("GET /proxy*http://www.youtube.com") > -1 || request.IndexOf("GET /results?search_query=") > -1)
+                            //client.UseDefaultCredentials = true;                            
                             {
-                                html = html.Replace("</body></html>", "");
-                                html += proxyjs;
-                            }
+                                var headers = request.Split(new string[] 
+                                {
+                                    "\r\n"
+                                }, 100, StringSplitOptions.None);
 
-                            xhtml.LoadHtml(html);
+                                //for(var i = 1; i < headers.) parse headers and to client.headers
+
+                                html = await client.DownloadStringTaskAsync(link);
+                                //html = await httpRequest(accSock, 1, request, link);
+
+                                if (html.IndexOf("//s.ytimg.com/yts/jsbin/html5player-new-en_US-vflSnomqH/html5player-new.js") > -1)
+                                {
+                                    overrideResp = true;
+                                    html = html.Replace("//s.ytimg.com/yts/jsbin/html5player-new-en_US-vflSnomqH/html5player-new.js", "https://" + setting.IpAddress + ":8083/proxy**http://s.ytimg.com/yts/jsbin/html5player-new-en_US-vflSnomqH/html5player-new.js");
+                                }
+
+                                if (html.IndexOf("//s.ytimg.com/yts/jsbin/spf-vflVcVpX_/spf.js") > -1)
+                                {
+                                    overrideResp = true;
+                                    html = html.Replace("//s.ytimg.com/yts/jsbin/spf-vflVcVpX_/spf.js", "https://" + setting.IpAddress + ":8083/proxy**http://s.ytimg.com/yts/jsbin/spf-vflVcVpX_/spf.js?");
+                                }
+
+                                if (html.IndexOf("//s.ytimg.com/yts/jsbin/www-en_US-vflENJpqL/base.js") > -1)
+                                {
+                                    overrideResp = true;
+                                    html = html.Replace("//s.ytimg.com/yts/jsbin/www-en_US-vflENJpqL/base.js", "https://" + setting.IpAddress + ":8083/proxy**http://s.ytimg.com/yts/jsbin/www-en_US-vflENJpqL/base.js");
+                                }
+
+                                if (link.IndexOf("html5player-new.js") > -1 || link.IndexOf("base.js") > -1 || link.IndexOf("spf.js") > -1)
+                                {
+                                    overrideResp = true;
+                                    html = html.Replace("l.send(d)", "l.send('http://" + setting.IpAddress + ":8083/proxy*' + d + '|')");
+                                    html = html.Replace("this.j.open(\"GET\",a);", "this.j.open(\"GET\", 'http://" + setting.IpAddress + ":8083/proxy*' + a + '|');");
+                                }
+
+                                if (request.IndexOf("GET /proxy*http://www.youtube.com") > -1 || request.IndexOf("GET /results?search_query=") > -1)
+                                {
+                                    html = html.Replace("</body></html>", "");
+                                    html += proxyjs;
+                                }
+
+                                xhtml.LoadHtml(html);
+                            }
                         }
                         else
                         {
-                            String postData = request.Substring(request.IndexOf("\r\n\r\n"));
+                            String postData = request.Substring(request.IndexOf("\r\n\r\n")+4);
 
                             LogDebug("link for POST call..." + link + " and POST data " + postData);
 
@@ -696,21 +779,63 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                                 }
                             }
 
-                            responseHeaders.Append("Content-Length: ");
-                            responseHeaders.Append(xhtml.DocumentNode.OuterHtml.Length);
-                            responseHeaders.Append("\r\n\r\n");
-                            accSock.Send(Encoding.ASCII.GetBytes(responseHeaders.ToString() + xhtml.DocumentNode.OuterHtml));
-                            accSock.Shutdown(SocketShutdown.Both);
+                            //if (!client.ResponseHeaders.AllKeys.Contains("Transfer-Encoding"))
+                            //{
+                                responseHeaders.Append("Content-Length: ");
+                                responseHeaders.Append(xhtml.DocumentNode.OuterHtml.Length);
+                                responseHeaders.Append("\r\n");
+                            //}
+
+                            foreach(var header in client.ResponseHeaders.AllKeys)
+                            {
+                                if (responseHeaders.ToString().IndexOf(header + ":") == -1 && ((header != "Transfer-Encoding") && (header != "X-XSS-Protection") && (header != "P3P")))
+                                {
+                                    responseHeaders.Append(header + ": ");
+                                    responseHeaders.Append(client.ResponseHeaders[header]);
+                                    responseHeaders.Append("\r\n");
+                                }
+                            }
+                            
+                            responseHeaders.Append("\r\n");
+
+                            if (!overrideResp)
+                            {
+                                accSock.Send(Encoding.ASCII.GetBytes(responseHeaders.ToString() + xhtml.DocumentNode.OuterHtml));
+                            }
+                            else
+                            {
+                                respbs.InsertRange(0, Encoding.ASCII.GetBytes(responseHeaders.ToString()));
+                                //respbs.AddRange(await client.DownloadDataTaskAsync(link));
+                                var bs = await httpRequest(1, request, link);
+                                accSock.Send(respbs.ToArray());
+                            }
+
+                            System.Threading.Thread.Sleep(100);
                             accSock.Close();
+                           // accSock.Shutdown(SocketShutdown.Both);
                         }
                         else
                         {
                             responseHeaders.Append("Content-Length: ");
                             responseHeaders.Append(html.Length);
-                            responseHeaders.Append("\r\n\r\n");
+                            responseHeaders.Append("\r\n");
+
+                            foreach (var header in client.ResponseHeaders.AllKeys)
+                            {
+                                if (responseHeaders.ToString().IndexOf(header + ":") == -1)
+                                {
+                                    responseHeaders.Append(header + ": ");
+                                    responseHeaders.Append(client.ResponseHeaders[header]);
+                                    responseHeaders.Append("\r\n");
+                                }
+                            }
+                            
+                            responseHeaders.Append("\r\n");
+
                             accSock.Send(Encoding.ASCII.GetBytes(responseHeaders.ToString() + html));
-                            accSock.Shutdown(SocketShutdown.Both);
+                            System.Threading.Thread.Sleep(100);
                             accSock.Close();
+                            //accSock.Shutdown(SocketShutdown.Both);
                         }
                     }
                     else
@@ -720,7 +845,8 @@ namespace AutomaticYoutubeVideoDownloaderAndConverter
                         respbs.AddRange(Encoding.ASCII.GetBytes(responseHeaders.ToString()));
                         respbs.AddRange(image);
                         accSock.Send(respbs.ToArray());
-                        accSock.Shutdown(SocketShutdown.Both);
+                        System.Threading.Thread.Sleep(100);
+                        //accSock.Shutdown(SocketShutdown.Both);
                         accSock.Close();
                     }
 
